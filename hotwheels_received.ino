@@ -23,14 +23,22 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <ESP32Servo.h>
 
 BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
 int connectionTime = 0;
 std::string rxValue;
 BLEServer *pServer;
-const int LED = 0;
+ESP32PWM pwm;
+int freq = 1000;
+const int LEFT_MAX_TURN = -100;
+const int RIGHT_MAX_TURN = 100;
+const int MAX_TURN = abs(LEFT_MAX_TURN) + abs(RIGHT_MAX_TURN);
+const int GREEN_LED = 0;
+const int RED_LED = 4;
 const int BLE_LED = 2; 
+const int SERVO_PIN = 13; 
 
 #define COMMAND_LIGHTS_TURN_ON    ":LIGHTS_ON;"
 #define COMMAND_LIGHTS_TURN_OFF   ":LIGHTS_OFF;"
@@ -54,9 +62,19 @@ void startAdvertising() {
   Serial.println("Waiting a client connection to notify...");
 }
 
+void setupServo() {
+  ESP32PWM::allocateTimer(0);
+	ESP32PWM::allocateTimer(1);
+	ESP32PWM::allocateTimer(2);
+	ESP32PWM::allocateTimer(3);
+  pwm.attachPin(SERVO_PIN, freq, 10); // 1KHz 8 bit
+}
+
 void resetState() {
   digitalWrite(BLE_LED, LOW);  
-  digitalWrite(LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  pwm.adjustFrequency(freq, 0.0); //reset frequency and reset servo position
   deviceConnected = false;
   connectionTime = 0;
 }
@@ -74,12 +92,16 @@ class MyServerCallbacks: public BLEServerCallbacks {
       digitalWrite(BLE_LED, LOW);
       delay(250);
       digitalWrite(BLE_LED, HIGH);
+      delay(250);
+      digitalWrite(BLE_LED, LOW);
     };
 
     void onDisconnect(BLEServer* pServer) {
       resetState();
 
       Serial.println("Device disconnected!");
+      digitalWrite(BLE_LED, HIGH);
+      delay(500);
       digitalWrite(BLE_LED, LOW);
       delay(500);
       digitalWrite(BLE_LED, HIGH);
@@ -92,7 +114,6 @@ class MyServerCallbacks: public BLEServerCallbacks {
 
 class CommandsCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      digitalWrite(BLE_LED, LOW);
       std::string rxValue = pCharacteristic->getValue();
 
       if (rxValue.length() > 0) {
@@ -108,11 +129,11 @@ class CommandsCallbacks: public BLECharacteristicCallbacks {
         // Do stuff based on the command received from the app
         if (rxValue.find(COMMAND_LIGHTS_TURN_ON) != -1) { 
           Serial.println("Lights ON!");
-          digitalWrite(LED, HIGH);
+          digitalWrite(GREEN_LED, HIGH);
         }
         else if (rxValue.find(COMMAND_LIGHTS_TURN_OFF) != -1) {
           Serial.println("Lights OFF!");
-          digitalWrite(LED, LOW);
+          digitalWrite(GREEN_LED, LOW);
         } else {
           Serial.println("Unknown command!");
         }
@@ -120,51 +141,52 @@ class CommandsCallbacks: public BLECharacteristicCallbacks {
         Serial.println();
         Serial.println("*********");
       }
-      digitalWrite(BLE_LED, HIGH);
     }
 };
 
 class TurningCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      digitalWrite(BLE_LED, LOW);
       String rxValue = pCharacteristic->getValue().c_str();
 
       if (rxValue.length() > 0) {
-        int value = rxValue.toInt();
+        digitalWrite(RED_LED, HIGH);
+        int turn = rxValue.toInt();
+        if (turn < LEFT_MAX_TURN) {
+          turn = LEFT_MAX_TURN;
+        } else if (turn > RIGHT_MAX_TURN) {
+          turn = RIGHT_MAX_TURN;
+        }
+        turn = turn + abs(LEFT_MAX_TURN);
+        double vector = (double) turn/ (double) MAX_TURN;
+        
         Serial.println("*********");
-        Serial.println("Turning " + rxValue + "!");
-        digitalWrite(LED, LOW);
-        delay(100);
-        digitalWrite(LED, HIGH);
-        delay(abs(value) * 10);
-        digitalWrite(LED, LOW);
+        Serial.println("Turning: " + String(vector, 4) + "!");
         Serial.println("*********");
+        
+        pwm.writeScaled(vector);
+         
+        digitalWrite(RED_LED, LOW);
       }
-      digitalWrite(BLE_LED, HIGH);
     }
 };
 
 class ThrottlingCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      digitalWrite(BLE_LED, LOW);
       String rxValue = pCharacteristic->getValue().c_str();
 
       if (rxValue.length() > 0) {
         int value = rxValue.toInt();
         Serial.println("*********");
         Serial.println("Throttling" + rxValue + "!");
-        digitalWrite(LED, LOW);
-        delay(100);
-        digitalWrite(LED, HIGH);
-        delay(value * 10);
-        digitalWrite(LED, LOW);
+        digitalWrite(RED_LED, HIGH);
+        delay(abs(value) * 10);
+        digitalWrite(RED_LED, LOW);
         delay(500);
-        digitalWrite(LED, HIGH);
+        digitalWrite(RED_LED, HIGH);
         delay(abs(value) * 10);   
-        digitalWrite(LED, LOW);   
+        digitalWrite(RED_LED, LOW);   
         Serial.println("*********");
       }
-      digitalWrite(BLE_LED, HIGH);
     }
 };
 
@@ -216,9 +238,11 @@ void initBle(std::string name, BLECharacteristicCallbacks* commandsCollbacks, BL
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
   pinMode(BLE_LED, OUTPUT);
   resetState();
+  setupServo();
   initBle("HotWheels Drift 2 (BLE)", new CommandsCallbacks(), new TurningCallbacks(), new ThrottlingCallbacks());
 }
 
@@ -226,15 +250,18 @@ void loop() {
   if (deviceConnected) {
     pCharacteristic->setValue(connectionTime);
     pCharacteristic->notify();
-    
     Serial.print("*** Connection time: ");
     Serial.print(connectionTime);
     Serial.println(" ***");
+    delay(1000);
   } else {
+    digitalWrite(BLE_LED, HIGH);
     Serial.print("*** No connection time: ");
     Serial.print(connectionTime);
     Serial.println(" ***");
+    delay(100);
+    digitalWrite(BLE_LED, LOW);
+    delay(900);
   }
-  delay(1000);
   connectionTime += 1;
 }
