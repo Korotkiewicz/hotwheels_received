@@ -25,7 +25,7 @@
 #include <BLE2902.h>
 #include <ESP32Servo.h>
 
-BLECharacteristic *pCharacteristic;
+BLECharacteristic *notifyCharacteristic;
 bool deviceConnected = false;
 int connectionTime = 0;
 std::string rxValue;
@@ -39,18 +39,22 @@ int SERVO_TURN_MIN = 10;
 int SERVO_TURN_MAX = 130;
 int FORWARD_MAX = 100;
 int BACKWARD_MAX = -100;
-const int GREEN_LED = 0;
-const int RED_LED = 4;
-const int BLE_LED = 2; 
+int THROTTLING_MIN = 0;
+int THROTTLING_MAX = 156;
+const int GREEN_LED = 27;//0
+const int RED_LED = 14;//4
+const int BLE_LED = 26;//2 
 const int PWM_FOR_TURNING_PIN = 13; 
-const int PWM_FOR_THROTTLING_PIN = 17; 
-// const int THROTTLING_DIRECTION_PIN = 5;
+const int PWM_FOR_THROTTLING_PIN = 16;
 
 #define COMMAND_LIGHTS_TURN_ON    ":LIGHTS_ON;"
 #define COMMAND_LIGHTS_TURN_OFF   ":LIGHTS_OFF;"
 const std::string COMMAND_CHANGE_MIN_TURN_PREFIX = ":x:min:";
 const std::string COMMAND_CHANGE_MAX_TURN_PREFIX = ":x:max:";
+const std::string COMMAND_CHANGE_THROTTLING_MIN_PREFIX = ":y:min:";
+const std::string COMMAND_CHANGE_THROTTLING_MAX_PREFIX = ":y:max:";
 #define COMMAND_SUFIX ";"
+#define COMMAND_GET_INFO ":GET_INFO;"
 
 // See the following for generating UUIDs:
 // https://www.uuidgenerator.net/
@@ -58,8 +62,6 @@ const std::string COMMAND_CHANGE_MAX_TURN_PREFIX = ":x:max:";
 #define SERVICE_UUID                            "5dfa6919-ce00-4e7c-8ddd-3d7a4060a2e0" // UART service UUID
 #define CHARACTERISTIC_UUID_TX                  "5dfa6919-ce01-4e7c-8ddd-3d7a4060a2e0"
 #define CHARACTERISTIC_UUID_COMMANDS            "5dfa6919-ce02-4e7c-8ddd-3d7a4060a2e0"
-// #define CHARACTERISTIC_UUID_TURNING             "5dfa6919-ce03-4e7c-8ddd-3d7a4060a2e0"
-// #define CHARACTERISTIC_UUID_THROTLING           "5dfa6919-ce04-4e7c-8ddd-3d7a4060a2e0"
 #define CHARACTERISTIC_UUID_MOVING           "5dfa6919-ce03-4e7c-8ddd-3d7a4060a2e0"
 
 
@@ -84,9 +86,8 @@ void resetState() {
   digitalWrite(BLE_LED, LOW);  
   digitalWrite(GREEN_LED, LOW);
   digitalWrite(RED_LED, LOW);
-  // digitalWrite(THROTTLING_DIRECTION_PIN, LOW);
   pwmForTurning.write(map(0, LEFT_MAX_TURN, RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX)); //reset servo position to middle
-  pwmForThrottling.write(0); //reset servo position to middle
+  pwmForThrottling.write(map(0, BACKWARD_MAX, FORWARD_MAX, THROTTLING_MIN, THROTTLING_MAX)); //reset servo position to middle
   deviceConnected = false;
   connectionTime = 0;
 }
@@ -95,9 +96,10 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
       connectionTime = 0;
-      Serial.println("Device connected!");
-      pCharacteristic->setValue("Hello!"); // Sending a test message
-      pCharacteristic->notify(); // Send the value to the app!
+      Serial.println("Device connected!"); // Sending a test message
+
+      notifyCharacteristic->setValue("Hello!");
+      notifyCharacteristic->notify(); // Send the value to the app!
       
       digitalWrite(BLE_LED, HIGH);
       delay(250);
@@ -125,13 +127,13 @@ class MyServerCallbacks: public BLEServerCallbacks {
 };
 
 class CommandsCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string rxValue = pCharacteristic->getValue();
+    void onWrite(BLECharacteristic *readCharacteristic) {
+      std::string rxValue = readCharacteristic->getValue();
 
       if (rxValue.length() > 0) {
         String command = String(rxValue.c_str());
         Serial.println("*********");
-        Serial.print("Received Value: " + command);
+        Serial.println("Received Value: " + command);
 
         // Do stuff based on the command received from the app
         if (rxValue.find(COMMAND_LIGHTS_TURN_ON) != -1) { 
@@ -151,7 +153,31 @@ class CommandsCallbacks: public BLECharacteristicCallbacks {
           int maxTurn = command.substring(COMMAND_CHANGE_MAX_TURN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
           Serial.println("Change max turn to " + String(maxTurn));
           SERVO_TURN_MAX = maxTurn;
-        } else {
+        } else if (rxValue.find(COMMAND_CHANGE_THROTTLING_MIN_PREFIX) != -1) {
+          int throttlingMin = command.substring(COMMAND_CHANGE_THROTTLING_MIN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
+          Serial.println("Change throttling min speed to " + String(throttlingMin));
+          THROTTLING_MIN = throttlingMin;
+        }
+        else if (rxValue.find(COMMAND_CHANGE_THROTTLING_MAX_PREFIX) != -1) {
+          int throttlingMax = command.substring(COMMAND_CHANGE_THROTTLING_MIN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
+          Serial.println("Change throttling max speed to " + String(throttlingMax));
+          THROTTLING_MAX = throttlingMax;
+        }
+        else if (rxValue.find(COMMAND_GET_INFO) != -1) {
+          String values[4] = {
+            String(COMMAND_CHANGE_MIN_TURN_PREFIX.c_str()) + String(SERVO_TURN_MIN) + String(COMMAND_SUFIX),
+            String(COMMAND_CHANGE_MAX_TURN_PREFIX.c_str()) + String(SERVO_TURN_MAX) + String(COMMAND_SUFIX),
+            String(COMMAND_CHANGE_THROTTLING_MIN_PREFIX.c_str()) + String(THROTTLING_MIN) + String(COMMAND_SUFIX),
+            String(COMMAND_CHANGE_THROTTLING_MAX_PREFIX.c_str()) + String(THROTTLING_MAX) + String(COMMAND_SUFIX),
+          };
+
+          for (int i = 0; i < 4; i++) {
+            Serial.println("Send info " + values[i]);
+            notifyCharacteristic->setValue(std::string(values[i].c_str())); // Send info
+            notifyCharacteristic->notify();
+          }
+        } 
+        else {
           Serial.println("Unknown command!");
         }
 
@@ -162,8 +188,8 @@ class CommandsCallbacks: public BLECharacteristicCallbacks {
 };
 
 class MovingCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      String rxValue = pCharacteristic->getValue().c_str();
+    void onWrite(BLECharacteristic *readCharacteristic) {
+      String rxValue = readCharacteristic->getValue().c_str();
 
       if (rxValue.length() > 0) {
         digitalWrite(RED_LED, HIGH);
@@ -182,69 +208,17 @@ class MovingCallbacks: public BLECharacteristicCallbacks {
           throttle = FORWARD_MAX;
         }
         turn = map(turn, LEFT_MAX_TURN, RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX);
-        throttle = map(throttle, BACKWARD_MAX, FORWARD_MAX, 0, 180);
+        throttle = map(throttle, BACKWARD_MAX, FORWARD_MAX, THROTTLING_MIN, THROTTLING_MAX);
         
         Serial.println("Move: " + String(turn) + ":" + String(throttle) + "");
         
-        pwmForTurning.write(turn); 
-        // digitalWrite(THROTTLING_DIRECTION_PIN, throttle <= 0 ? LOW : HIGH);
+        pwmForTurning.write(turn);
         pwmForThrottling.write(throttle);
          
         digitalWrite(RED_LED, LOW);
       }
     }
 };
-
-// class TurningCallbacks: public BLECharacteristicCallbacks {
-//     void onWrite(BLECharacteristic *pCharacteristic) {
-//       String rxValue = pCharacteristic->getValue().c_str();
-
-//       if (rxValue.length() > 0) {
-//         digitalWrite(RED_LED, HIGH);
-//         long turn = rxValue.toInt();
-//         if (turn < LEFT_MAX_TURN) {
-//           turn = LEFT_MAX_TURN;
-//         } else if (turn > RIGHT_MAX_TURN) {
-//           turn = RIGHT_MAX_TURN;
-//         }
-//         turn = map(turn, LEFT_MAX_TURN, RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX);
-        
-//         Serial.println("*********");
-//         Serial.println("Turning: " + String(turn) + "!");
-//         Serial.println("*********");
-        
-//         pwmForTurning.write(turn);
-         
-//         digitalWrite(RED_LED, LOW);
-//       }
-//     }
-// };
-
-// class ThrottlingCallbacks: public BLECharacteristicCallbacks {
-//     void onWrite(BLECharacteristic *pCharacteristic) {
-//       String rxValue = pCharacteristic->getValue().c_str();
-
-//       if (rxValue.length() > 0) {
-//         digitalWrite(RED_LED, HIGH);
-//         long throttle = rxValue.toInt();
-//         if (throttle < BACKWARD_MAX) {
-//           throttle = BACKWARD_MAX;
-//         } else if (throttle > FORWARD_MAX) {
-//           throttle = FORWARD_MAX;
-//         }
-//         throttle = map(throttle, BACKWARD_MAX, FORWARD_MAX, 0, 180);
-        
-//         Serial.println("*********");
-//         Serial.println("Throttling: " + String(throttle) + "!");
-//         Serial.println("*********");
-        
-//         // digitalWrite(THROTTLING_DIRECTION_PIN, throttle <= 0 ? LOW : HIGH);
-//         pwmForThrottling.write(throttle);
-         
-//         digitalWrite(RED_LED, LOW);
-//       }
-//     }
-// };
 
 void initBle(std::string name, BLECharacteristicCallbacks* commandsCollbacks, BLECharacteristicCallbacks* movingCallbacks) {
   digitalWrite(BLE_LED, HIGH);
@@ -259,14 +233,14 @@ void initBle(std::string name, BLECharacteristicCallbacks* commandsCollbacks, BL
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
   // Create a BLE Characteristic
-  pCharacteristic = pService->createCharacteristic(
+  notifyCharacteristic = pService->createCharacteristic(
     CHARACTERISTIC_UUID_TX,
     BLECharacteristic::PROPERTY_NOTIFY
   );
                       
-  pCharacteristic->addDescriptor(new BLE2902());
+  notifyCharacteristic->addDescriptor(new BLE2902());
 
-  pCharacteristic = pService->createCharacteristic(
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
     CHARACTERISTIC_UUID_COMMANDS,
     BLECharacteristic::PROPERTY_WRITE
   );
@@ -291,7 +265,6 @@ void setup() {
   pinMode(RED_LED, OUTPUT);
   pinMode(GREEN_LED, OUTPUT);
   pinMode(BLE_LED, OUTPUT);
-  // pinMode(THROTTLING_DIRECTION_PIN, OUTPUT);
   setupPWM();
   resetState();
   initBle("HotWheels Drift 0001", new CommandsCallbacks(), new MovingCallbacks());
@@ -299,12 +272,10 @@ void setup() {
 
 void loop() {
   if (deviceConnected) {
-    pCharacteristic->setValue(connectionTime);
-    pCharacteristic->notify();
     Serial.print("*** Connection time: ");
     Serial.print(connectionTime);
     Serial.println(" ***");
-    delay(1000);
+    delay(10000);
   } else {
     digitalWrite(BLE_LED, HIGH);
     Serial.print("*** No connection time: ");
@@ -312,7 +283,7 @@ void loop() {
     Serial.println(" ***");
     delay(100);
     digitalWrite(BLE_LED, LOW);
-    delay(900);
+    delay(4900);
   }
   connectionTime += 1;
 }
