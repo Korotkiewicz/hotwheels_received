@@ -1,24 +1,3 @@
-/*
-    Video: https://www.youtube.com/watch?v=oCMOYS71NIU
-    Based on Neil Kolban example for IDF: https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleNotify.cpp
-    Ported to Arduino ESP32 by Evandro Copercini
-
-   Create a BLE server that, once we receive a connection, will send periodic notifications.
-   The service advertises itself as: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
-   Has a characteristic of: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E - used for receiving data with "WRITE" 
-   Has a characteristic of: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E - used to send data with  "NOTIFY"
-
-   The design of creating the BLE server is:
-   1. Create a BLE Server
-   2. Create a BLE Service
-   3. Create a BLE Characteristic on the Service
-   4. Create a BLE Descriptor on the characteristic
-   5. Start the service.
-   6. Start advertising.
-
-   In this example rxValue is the data received (only accessible inside that function).
-   And txValue is the data to be sent, in this example just a byte incremented every second. 
-*/
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -33,22 +12,27 @@ BLEServer *pServer;
 ESP32PWM pwmForTurning;
 ESP32PWM pwmForThrottling;
 int PWM_FREQUENCY = 50;//1kHz
-int LEFT_MAX_TURN = -100;
-int RIGHT_MAX_TURN = 100;
+const int INPUT_LEFT_MAX_TURN = -1000;
+const int INPUT_RIGHT_MAX_TURN = 1000;
 int SERVO_TURN_MIN = 10;
 int SERVO_TURN_MAX = 130;
-int FORWARD_MAX = 100;
-int BACKWARD_MAX = -100;
+const int INPUT_MAX_THROTTLING = 1000;
+const int INPUT_MIN_THROTTLING = -1000;
 int THROTTLING_MIN = 0;
 int THROTTLING_MAX = 156;
-const int GREEN_LED = 27;//0
-const int RED_LED = 14;//4
-const int BLE_LED = 26;//2 
+const int PARGING_LIGHTS_LED = 27;
+const int TRAFFIC_LIGHTS_LED = 25;
+const int RED_LED = 14;
+const int BLE_LED = 26;
 const int PWM_FOR_TURNING_PIN = 13; 
 const int PWM_FOR_THROTTLING_PIN = 16;
 
-#define COMMAND_LIGHTS_TURN_ON    ":LIGHTS_ON;"
-#define COMMAND_LIGHTS_TURN_OFF   ":LIGHTS_OFF;"
+const std::string DEVICE_ID = "0001";//Test one
+const std::string DEVICE_ID = "0002";//Dodge Challenger
+#define COMMAND_PARKING_LIGHTS_TURN_ON    ":LIGHTS_ON;"
+#define COMMAND_PARKING_LIGHTS_TURN_OFF   ":LIGHTS_OFF;"
+#define COMMAND_TRAFFIC_LIGHTS_TURN_ON    ":TLIGHTS_ON;"
+#define COMMAND_TRAFFIC_LIGHTS_TURN_OFF   ":TLIGHTS_OFF;"
 const std::string COMMAND_CHANGE_MIN_TURN_PREFIX = ":x:min:";
 const std::string COMMAND_CHANGE_MAX_TURN_PREFIX = ":x:max:";
 const std::string COMMAND_CHANGE_THROTTLING_MIN_PREFIX = ":y:min:";
@@ -82,12 +66,21 @@ void setupPWM() {
   pwmForThrottling.attachPin(PWM_FOR_THROTTLING_PIN, PWM_FREQUENCY, 10); // 1kHz 8 bit
 }
 
+void setNoTurn() {
+  pwmForTurning.write(map(0, INPUT_LEFT_MAX_TURN, INPUT_RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX)); //reset servo position to middle
+}
+
+void setNoThrottle() {
+  pwmForThrottling.write(map(0, INPUT_MIN_THROTTLING, INPUT_MAX_THROTTLING, THROTTLING_MIN, THROTTLING_MAX)); //reset servo position to middle
+}
+
 void resetState() {
   digitalWrite(BLE_LED, LOW);  
-  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(PARGING_LIGHTS_LED, LOW);
+  digitalWrite(TRAFFIC_LIGHTS_LED, LOW);
   digitalWrite(RED_LED, LOW);
-  pwmForTurning.write(map(0, LEFT_MAX_TURN, RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX)); //reset servo position to middle
-  pwmForThrottling.write(map(0, BACKWARD_MAX, FORWARD_MAX, THROTTLING_MIN, THROTTLING_MAX)); //reset servo position to middle
+  setNoTurn();
+  setNoThrottle();
   deviceConnected = false;
   connectionTime = 0;
 }
@@ -136,32 +129,44 @@ class CommandsCallbacks: public BLECharacteristicCallbacks {
         Serial.println("Received Value: " + command);
 
         // Do stuff based on the command received from the app
-        if (rxValue.find(COMMAND_LIGHTS_TURN_ON) != -1) { 
-          Serial.println("Lights ON!");
-          digitalWrite(GREEN_LED, HIGH);
+        if (rxValue.find(COMMAND_PARKING_LIGHTS_TURN_ON) != -1) { 
+          Serial.println("Parking Lights ON!");
+          digitalWrite(PARGING_LIGHTS_LED, HIGH);
         }
-        else if (rxValue.find(COMMAND_LIGHTS_TURN_OFF) != -1) {
-          Serial.println("Lights OFF!");
-          digitalWrite(GREEN_LED, LOW);
+        else if (rxValue.find(COMMAND_PARKING_LIGHTS_TURN_OFF) != -1) {
+          Serial.println("Parking Lights OFF!");
+          digitalWrite(PARGING_LIGHTS_LED, LOW);
+        }
+        else if (rxValue.find(COMMAND_TRAFFIC_LIGHTS_TURN_ON) != -1) { 
+          Serial.println("Traffic Lights ON!");
+          digitalWrite(TRAFFIC_LIGHTS_LED, HIGH);
+        }
+        else if (rxValue.find(COMMAND_TRAFFIC_LIGHTS_TURN_OFF) != -1) {
+          Serial.println("Traffic Lights OFF!");
+          digitalWrite(TRAFFIC_LIGHTS_LED, LOW);
         }
         else if (rxValue.find(COMMAND_CHANGE_MIN_TURN_PREFIX) != -1) {
           int minTurn = command.substring(COMMAND_CHANGE_MIN_TURN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
           Serial.println("Change min turn to " + String(minTurn));
           SERVO_TURN_MIN = minTurn;
+          setNoTurn();
         }
         else if (rxValue.find(COMMAND_CHANGE_MAX_TURN_PREFIX) != -1) {
           int maxTurn = command.substring(COMMAND_CHANGE_MAX_TURN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
           Serial.println("Change max turn to " + String(maxTurn));
           SERVO_TURN_MAX = maxTurn;
+          setNoTurn();
         } else if (rxValue.find(COMMAND_CHANGE_THROTTLING_MIN_PREFIX) != -1) {
           int throttlingMin = command.substring(COMMAND_CHANGE_THROTTLING_MIN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
           Serial.println("Change throttling min speed to " + String(throttlingMin));
           THROTTLING_MIN = throttlingMin;
+          setNoThrottle();
         }
         else if (rxValue.find(COMMAND_CHANGE_THROTTLING_MAX_PREFIX) != -1) {
-          int throttlingMax = command.substring(COMMAND_CHANGE_THROTTLING_MIN_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
+          int throttlingMax = command.substring(COMMAND_CHANGE_THROTTLING_MAX_PREFIX.length(), command.indexOf(COMMAND_SUFIX)).toInt();          
           Serial.println("Change throttling max speed to " + String(throttlingMax));
           THROTTLING_MAX = throttlingMax;
+          setNoThrottle();
         }
         else if (rxValue.find(COMMAND_GET_INFO) != -1) {
           String values[4] = {
@@ -197,18 +202,18 @@ class MovingCallbacks: public BLECharacteristicCallbacks {
         long turn = rxValue.substring(0,index).toInt();
         long throttle = rxValue.substring(index + 1, rxValue.length()).toInt();
 
-        if (turn < LEFT_MAX_TURN) {
-          turn = LEFT_MAX_TURN;
-        } else if (turn > RIGHT_MAX_TURN) {
-          turn = RIGHT_MAX_TURN;
+        if (turn < INPUT_LEFT_MAX_TURN) {
+          turn = INPUT_LEFT_MAX_TURN;
+        } else if (turn > INPUT_RIGHT_MAX_TURN) {
+          turn = INPUT_RIGHT_MAX_TURN;
         }
-        if (throttle < BACKWARD_MAX) {
-          throttle = BACKWARD_MAX;
-        } else if (throttle > FORWARD_MAX) {
-          throttle = FORWARD_MAX;
+        if (throttle < INPUT_MIN_THROTTLING) {
+          throttle = INPUT_MIN_THROTTLING;
+        } else if (throttle > INPUT_MAX_THROTTLING) {
+          throttle = INPUT_MAX_THROTTLING;
         }
-        turn = map(turn, LEFT_MAX_TURN, RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX);
-        throttle = map(throttle, BACKWARD_MAX, FORWARD_MAX, THROTTLING_MIN, THROTTLING_MAX);
+        turn = map(turn, INPUT_LEFT_MAX_TURN, INPUT_RIGHT_MAX_TURN, SERVO_TURN_MIN, SERVO_TURN_MAX);
+        throttle = map(throttle, INPUT_MIN_THROTTLING, INPUT_MAX_THROTTLING, THROTTLING_MIN, THROTTLING_MAX);
         
         Serial.println("Move: " + String(turn) + ":" + String(throttle) + "");
         
@@ -263,11 +268,12 @@ void initBle(std::string name, BLECharacteristicCallbacks* commandsCollbacks, BL
 void setup() {
   Serial.begin(115200);
   pinMode(RED_LED, OUTPUT);
-  pinMode(GREEN_LED, OUTPUT);
+  pinMode(PARGING_LIGHTS_LED, OUTPUT);
+  pinMode(TRAFFIC_LIGHTS_LED, OUTPUT);
   pinMode(BLE_LED, OUTPUT);
   setupPWM();
   resetState();
-  initBle("HotWheels Drift 0001", new CommandsCallbacks(), new MovingCallbacks());
+  initBle("HotWheels Drift " + DEVICE_ID, new CommandsCallbacks(), new MovingCallbacks());
 }
 
 void loop() {
